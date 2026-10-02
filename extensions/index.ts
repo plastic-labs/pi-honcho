@@ -1,144 +1,193 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { bootstrap, clearHandles, getHandles } from "./client.js";
+import type {
+  BeforeAgentStartEvent,
+  BeforeAgentStartEventResult,
+  ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
+import { UploadQueue, extractMessages, toInputs, uploadBatches } from "./capture.js";
 import { registerCommands } from "./commands.js";
-import { resolveConfig } from "./config.js";
+import { errorMessage, withTimeout } from "./honcho.js";
 import {
-  clearCachedMemory,
-  flushPending,
-  getCachedMemory,
-  refreshMemoryCache,
-  saveMessages,
+  SECTION_NAME,
+  TURN_MESSAGE_TYPE,
+  formatSection,
+  recallForTurn,
+  shouldSkipPrompt,
 } from "./memory.js";
+import { HonchoRuntime } from "./runtime.js";
+import { TURN_BUDGET_MS } from "./settings.js";
 import { registerTools } from "./tools.js";
+import { PendingTurn } from "./ui/pending.js";
+import { registerRenderers } from "./ui/renderers.js";
 
-interface StatusContext {
-  ui: {
-    setStatus: (id: string, text: string) => void;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    theme: any;
-  };
-}
-
-const setStatus = (
-  ctx: StatusContext,
-  state: "off" | "connected" | "syncing" | "offline" | "error",
-): void => {
-  const { theme } = ctx.ui;
-  const labels: Record<string, string> = {
-    off: theme.fg("dim", "🧠 Honcho off"),
-    connected: theme.fg("success", "🧠 Connected"),
-    syncing: theme.fg("warning", "🧠 Syncing"),
-    offline: theme.fg("dim", "🧠 Offline"),
-    error: theme.fg("error", "🧠 Error"),
-  };
-  ctx.ui.setStatus("honcho", labels[state]);
-};
+const recallLabel = (mode: "chat" | "context"): string =>
+  mode === "chat" ? "checking memory" : "loading context";
 
 export default function honcho(pi: ExtensionAPI): void {
-  let initializing: Promise<void> | null = null;
+  const runtime = new HonchoRuntime(pi);
+  const uploads = new UploadQueue((error) => {
+    runtime.lastError = `saving messages failed: ${errorMessage(error)}`;
+  });
+  const pending = new PendingTurn();
 
-  // --- Register tools & commands (always, so they can show helpful errors if not connected) ---
-  registerTools(pi);
-  registerCommands(pi);
+  registerRenderers(pi);
+  registerTools(pi, runtime);
+  registerCommands(pi, runtime);
 
-  /**
-   * Non-blocking bootstrap: kicks off Honcho initialization in the background.
-   * Sets status on completion. Never throws.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const backgroundInit = (ctx: { ui: any; cwd: string }): void => {
-    initializing = (async () => {
-      try {
-        const config = await resolveConfig();
-        if (!config.enabled || !config.apiKey) {
-          setStatus(ctx, "off");
-          return;
-        }
+  // The text as typed, before pi expands skills and prompt templates
+  let typed: { text: string; source: string } | undefined;
+  // This run's prompt as pi expanded it, paired with what the user typed
+  let turn: { expanded: string; typed: string; fromExtension: boolean } | undefined;
+  // Steers and follow-ups other extensions sent while a run was streaming
+  let extensionTexts: string[] = [];
 
-        const handles = await bootstrap(pi, config, ctx.cwd);
-        setStatus(ctx, "connected");
-
-        // Prefetch memory context
-        await refreshMemoryCache(handles);
-      } catch {
-        setStatus(ctx, "offline");
-      } finally {
-        initializing = null;
-      }
-    })();
-  };
-
-  // --- Lifecycle events ---
+  pi.on("input", (event) => {
+    pending.clear();
+    if (!event.streamingBehavior) {
+      typed = { text: event.text, source: event.source };
+    } else if (event.source === "extension") {
+      extensionTexts.push(event.text.trim());
+    }
+  });
 
   pi.on("session_start", (_event, ctx) => {
-    clearHandles();
-    clearCachedMemory();
-    backgroundInit(ctx);
+    runtime.start(ctx);
   });
 
-  pi.on("session_switch", async (_event, ctx) => {
-    await flushPending();
-    clearHandles();
-    clearCachedMemory();
-    backgroundInit(ctx);
+  pi.on("model_select", (event) => {
+    runtime.setModel(event.model.id);
   });
-
-  pi.on("session_fork", async (_event, ctx) => {
-    await flushPending();
-    clearHandles();
-    clearCachedMemory();
-    backgroundInit(ctx);
-  });
-
-  // --- Prompt path: inject cached memory into system prompt (0ms network) ---
 
   pi.on("before_agent_start", async (event) => {
-    // Wait for initial bootstrap if it's still running on the very first prompt
-    if (initializing) {
-      await initializing;
-    }
-
-    const memoryText = getCachedMemory();
-    if (!memoryText) {
-      return;
-    }
-
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${memoryText}`,
+    const raw = typed;
+    typed = undefined;
+    turn = {
+      expanded: event.prompt,
+      typed: raw?.text ?? event.prompt,
+      fromExtension: raw?.source === "extension",
     };
-  });
-
-  // --- Post-response: save messages + refresh cache ---
-
-  pi.on("agent_end", async (event, ctx) => {
-    const handles = getHandles();
-    if (!handles) {
+    if (runtime.phase === "off" || runtime.phase === "signed-out" || runtime.phase === "error") {
       return;
     }
-
-    setStatus(ctx, "syncing");
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-type-assertion
-    saveMessages(handles, event.messages as any[])
-      .then(() => setStatus(ctx, "connected"))
-      .catch(() => setStatus(ctx, "offline"));
+    const { perTurn } = runtime.settings.injection;
+    const query = turn.typed;
+    const skip = perTurn === "off" || turn.fromExtension || shouldSkipPrompt(query);
+    const recall = skip ? undefined : recallLabel(perTurn);
+    pending.show(runtime.ctx, event.prompt, recall ?? "loading memory");
+    try {
+      return await prepareTurn(event, query, recall);
+    } finally {
+      pending.settle();
+    }
   });
 
-  // --- Flush on lifecycle edges ---
+  /** Injects the session-start section and, when `recall` names a label, per-turn memory. */
+  const prepareTurn = async (
+    event: BeforeAgentStartEvent,
+    query: string,
+    recall: string | undefined,
+  ): Promise<BeforeAgentStartEventResult | undefined> => {
+    const deadline = Date.now() + TURN_BUDGET_MS;
+    const remaining = () => Math.max(0, deadline - Date.now());
+
+    const connection = await runtime.ready(remaining());
+    if (!connection) {
+      return;
+    }
+    const startup = await runtime.startupReady(Math.min(remaining(), 10_000));
+    if (startup && (startup.peerCard.length || startup.summary)) {
+      // Rebuilt each turn so the tool hints follow /honcho config
+      event.systemPromptOptions.sections[SECTION_NAME] = formatSection(startup, {
+        peer: runtime.settings.peerName,
+        session: connection.sessionName,
+        tools: runtime.settings.tools,
+      });
+    }
+
+    if (!recall) {
+      return;
+    }
+    try {
+      const result = await runtime.footer.working(recall, () =>
+        withTimeout(
+          runtime.call(
+            (c) =>
+              recallForTurn(
+                { userPeer: c.userPeer, dialecticPeer: c.dialecticPeer },
+                runtime.settings,
+                query,
+              ),
+            {
+              quiet: true,
+            },
+          ),
+          remaining(),
+        ),
+      );
+      if (!result) {
+        return;
+      }
+      return {
+        message: {
+          customType: TURN_MESSAGE_TYPE,
+          content: result.content,
+          display: runtime.settings.injection.showPerTurn,
+          details: result.details,
+        },
+      };
+    } catch (error) {
+      const timedOut = (error as Error)?.name === "TurnTimeoutError";
+      runtime.safe(() =>
+        runtime.ctx?.ui.notify(
+          timedOut
+            ? `honcho: memory check timed out after ${TURN_BUDGET_MS / 1000}s; continuing without it`
+            : `honcho: memory check failed (${errorMessage(error)}); continuing without it`,
+          "warning",
+        ),
+      );
+      return undefined;
+    }
+  };
+
+  pi.on("message_start", (event) => {
+    if (event.message.role === "user") {
+      pending.clear();
+    }
+  });
+
+  pi.on("agent_end", (event) => {
+    pending.clear();
+    const prompt = turn ? { ...turn, extensionTexts } : undefined;
+    turn = undefined;
+    extensionTexts = [];
+    const { phase, settings } = runtime;
+    if (
+      !settings.enabled ||
+      !settings.saveMessages ||
+      phase === "off" ||
+      phase === "signed-out" ||
+      phase === "error"
+    ) {
+      return;
+    }
+    const messages = extractMessages(event.messages, prompt);
+    if (!messages.length) {
+      return;
+    }
+    const meta = { source: "pi", pi_session: runtime.ctx?.sessionManager.getSessionId() ?? "" };
+    uploads.enqueue(() =>
+      runtime.call(async (c) => {
+        await uploadBatches(c.session, toInputs(c, messages, meta));
+      }),
+    );
+  });
 
   pi.on("session_before_compact", async () => {
-    await flushPending();
-  });
-
-  pi.on("session_before_switch", async () => {
-    await flushPending();
-  });
-
-  pi.on("session_before_fork", async () => {
-    await flushPending();
+    await uploads.flush();
   });
 
   pi.on("session_shutdown", async () => {
-    await flushPending();
+    pending.clear();
+    await uploads.flush();
+    runtime.dispose();
   });
 }

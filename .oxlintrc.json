@@ -8,7 +8,12 @@
     "suspicious": "warn"
   },
   "rules": {
-    "import/no-cycle": ["error", { "maxDepth": 3 }],
+    "import/no-cycle": [
+      "error",
+      {
+        "maxDepth": 3
+      }
+    ],
     "import/no-nodejs-modules": "off",
     "import/no-named-export": "off",
     "import/prefer-default-export": "off",
@@ -22,7 +27,13 @@
     "sort-keys": "off",
     "sort-imports": "off",
     "id-length": "off",
-    "promise/prefer-await-to-then": "off"
+    "promise/prefer-await-to-then": "off",
+    "no-duplicate-imports": [
+      "warn",
+      {
+        "allowSeparateTypeImports": true
+      }
+    ]
   },
   "settings": {},
   "env": {

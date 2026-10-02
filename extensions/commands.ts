@@ -1,198 +1,123 @@
-/* eslint-disable no-magic-numbers */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { mkdir, writeFile } from "node:fs/promises"; // eslint-disable-line import/no-nodejs-modules
-import { dirname } from "node:path"; // eslint-disable-line import/no-nodejs-modules
-import { bootstrap, clearHandles, getHandles } from "./client.js";
-import {
-  getConfigPath,
-  getSessionStrategyLabel,
-  normalizeSessionStrategy,
-  readConfigFile,
-  resolveConfig,
-} from "./config.js";
-import { getCachedMemory } from "./memory.js";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { ensureHostBlock, updateConfig } from "./config-file.js";
+import { errorMessage } from "./honcho.js";
+import type { HonchoRuntime } from "./runtime.js";
+import { openConfig } from "./ui/config.js";
+import { STATUS_ENTRY_TYPE } from "./ui/entries.js";
+import { runLogin, runLogout } from "./ui/login.js";
+import type { LoginMethod } from "./ui/login.js";
+import { collectStatus } from "./ui/status-panel.js";
 
-const MASKED_KEY = "••••••••";
-const JSON_INDENT = 2;
+const SUBCOMMANDS: AutocompleteItem[] = [
+  { value: "login", label: "login", description: "Sign in: browser, device code or API key" },
+  { value: "login browser", label: "login browser", description: "Sign in through your browser" },
+  {
+    value: "login device",
+    label: "login device",
+    description: "Sign in with a code on any device",
+  },
+  { value: "login key", label: "login key", description: "Paste an API key" },
+  { value: "logout", label: "logout", description: "Clear the saved login" },
+  { value: "config", label: "config", description: "Honcho settings" },
+  { value: "on", label: "on", description: "Turn Honcho on for pi" },
+  { value: "off", label: "off", description: "Turn Honcho off for pi" },
+  { value: "status", label: "status", description: "Connection, memory and settings" },
+];
 
-// --- Helpers ---
-
-const errorMessage = (err: unknown): string => {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
+const LOGIN_METHODS: Record<string, LoginMethod> = {
+  browser: "browser",
+  device: "device",
+  code: "device",
+  key: "key",
+  "api-key": "key",
+  apikey: "key",
 };
 
-const enabledLabel = (flag: boolean): string => {
-  if (flag) {
-    return "✅ yes";
-  }
-  return "❌ no";
+export const setEnabled = (enabled: boolean, path: string): void => {
+  updateConfig((config) => {
+    ensureHostBlock(config).enabled = enabled;
+  }, path);
 };
 
-const memoryCacheLabel = (cached: string | null): string => {
-  if (cached) {
-    return `${cached.length} chars`;
-  }
-  return "empty";
-};
-
-const buildStatusLines = (
-  config: Awaited<ReturnType<typeof resolveConfig>>,
-  handles: ReturnType<typeof getHandles>,
-  cached: string | null,
-): string[] => {
-  const lines: string[] = [];
-  lines.push(`Enabled:      ${enabledLabel(config.enabled)}`);
-  lines.push(`Connected:    ${enabledLabel(Boolean(handles))}`);
-  lines.push(`Workspace:    ${config.workspaceId}`);
-  lines.push(`User peer:    ${config.userPeerId}`);
-  lines.push(`AI peer:      ${config.aiPeerId}`);
-  lines.push(`Session mode: ${getSessionStrategyLabel(config.sessionStrategy)}`);
-  lines.push(`Context toks: ${config.contextTokens}`);
-  lines.push(`Msg max len:  ${config.maxMessageLength}`);
-  lines.push(`Search limit: ${config.searchLimit}`);
-  lines.push(`Tool preview: ${config.toolPreviewLength}`);
-
-  if (handles) {
-    lines.push(`Session key:  ${handles.sessionKey}`);
-  }
-
-  lines.push(`Memory cache: ${memoryCacheLabel(cached)}`);
-
-  if (config.baseURL) {
-    lines.push(`Endpoint:     ${config.baseURL}`);
-  }
-
-  return lines;
-};
-
-const buildConfigFile = (
-  fileContents: Record<string, unknown>,
-  apiKey: string | null | undefined,
-  peerName: string | null | undefined,
-  endpoint: string | null | undefined,
-  sessionStrategy: string | null | undefined,
-  existing: Awaited<ReturnType<typeof resolveConfig>>,
-): Record<string, unknown> => {
-  const updated = { ...fileContents };
-
-  if (apiKey && apiKey !== MASKED_KEY) {
-    updated.apiKey = apiKey;
-  }
-  if (peerName) {
-    updated.peerName = peerName;
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  const hosts = (
-    typeof updated.hosts === "object" && updated.hosts !== null ? updated.hosts : {}
-  ) as Record<string, unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  const piHost = (typeof hosts.pi === "object" && hosts.pi !== null ? hosts.pi : {}) as Record<
-    string,
-    unknown
-  >;
-  // Workspace and aiPeer are not collected by the setup wizard.
-  // Writing them unconditionally would freeze env-var-resolved values
-  // (HONCHO_WORKSPACE_ID / HONCHO_AI_PEER) into the config file and cause
-  // Stale values if those env vars later change.
-  // Any value already present in the file is preserved via piHost above.
-  piHost.sessionStrategy = normalizeSessionStrategy(sessionStrategy || existing.sessionStrategy);
-  if (endpoint) {
-    piHost.endpoint = endpoint;
-  }
-  hosts.pi = piHost;
-  updated.hosts = hosts;
-
-  return updated;
-};
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const testConnection = async (pi: ExtensionAPI, ctx: { ui: any; cwd: string }): Promise<void> => {
-  ctx.ui.notify("Testing connection...", "info");
+const toggle = async (runtime: HonchoRuntime, ctx: ExtensionCommandContext, enabled: boolean) => {
   try {
-    clearHandles();
-    const newConfig = await resolveConfig();
-    await bootstrap(pi, newConfig, ctx.cwd);
-    ctx.ui.notify("✅ Connected to Honcho!", "info");
-    ctx.ui.setStatus("honcho", ctx.ui.theme.fg("success", "🧠 Connected"));
-  } catch (err) {
-    ctx.ui.notify(`❌ Connection failed: ${errorMessage(err)}`, "error");
-    ctx.ui.setStatus("honcho", ctx.ui.theme.fg("error", "🧠 Error"));
+    setEnabled(enabled, runtime.store.path);
+  } catch (error) {
+    ctx.ui.notify(`honcho: could not save the setting (${errorMessage(error)})`, "error");
+    return;
+  }
+  await runtime.restart();
+  if (!enabled) {
+    ctx.ui.notify("honcho: off for pi. Nothing is injected or saved until /honcho on.", "info");
+  } else if (runtime.settings.enabled) {
+    ctx.ui.notify(
+      runtime.active ? "honcho: on" : `honcho: on. ${runtime.describeUnavailable()}`,
+      "info",
+    );
+  } else {
+    ctx.ui.notify(
+      "honcho: still off because HONCHO_ENABLED=false is set in your environment.",
+      "warning",
+    );
   }
 };
 
-export const registerCommands = (pi: ExtensionAPI): void => {
-  // --- /honcho-status ---
-  pi.registerCommand("honcho-status", {
-    description: "Show Honcho memory connection status",
-    handler: async (_args, ctx) => {
-      const config = await resolveConfig();
-      const handles = getHandles();
-      const cached = getCachedMemory();
-      const lines = buildStatusLines(config, handles, cached);
-      ctx.ui.notify(lines.join("\n"), "info");
+const showStatus = async (runtime: HonchoRuntime, ctx: ExtensionCommandContext) => {
+  const snapshot = await runtime.footer.working("checking status", () => collectStatus(runtime));
+  if (ctx.mode === "tui") {
+    runtime.pi.appendEntry(STATUS_ENTRY_TYPE, snapshot);
+  } else {
+    ctx.ui.notify(`honcho: ${snapshot.state} · ${snapshot.endpoint}`, "info");
+  }
+};
+
+export const registerCommands = (pi: ExtensionAPI, runtime: HonchoRuntime): void => {
+  pi.registerCommand("honcho", {
+    description: "Honcho memory: status, login, logout, config, on, off",
+    getArgumentCompletions: (prefix) => {
+      const p = prefix.trim().toLowerCase();
+      const matches = SUBCOMMANDS.filter((item) => item.value.startsWith(p));
+      return matches.length ? matches : null;
     },
-  });
-
-  // --- /honcho-setup ---
-  pi.registerCommand("honcho-setup", {
-    description: "Configure Honcho memory integration",
-    handler: async (_args, ctx) => {
-      const existing = await resolveConfig();
-
-      const defaultKey = existing.apiKey ? MASKED_KEY : "hch-...";
-      const apiKey = await ctx.ui.input("Honcho API key:", defaultKey);
-      if (!apiKey || apiKey === MASKED_KEY) {
-        if (!existing.apiKey) {
-          ctx.ui.notify("API key is required.", "error");
+    handler: async (args, ctx) => {
+      const [sub = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+      switch (sub.toLowerCase()) {
+        case "":
+        case "status":
+          await showStatus(runtime, ctx);
+          return;
+        case "login": {
+          const method = rest[0] ? LOGIN_METHODS[rest[0].toLowerCase()] : undefined;
+          if (rest[0] && !method) {
+            ctx.ui.notify(
+              `honcho: unknown login method "${rest[0]}". Use browser, device or key.`,
+              "warning",
+            );
+            return;
+          }
+          await runLogin(ctx, runtime, method);
           return;
         }
+        case "logout":
+          await runLogout(ctx, runtime);
+          return;
+        case "config":
+        case "settings":
+          await openConfig(ctx, runtime);
+          return;
+        case "on":
+          await toggle(runtime, ctx, true);
+          return;
+        case "off":
+          await toggle(runtime, ctx, false);
+          return;
+        default:
+          ctx.ui.notify(
+            `honcho: unknown command "${sub}". Try /honcho, login, logout, config, on or off.`,
+            "warning",
+          );
       }
-
-      const peerName = await ctx.ui.input("Your peer name:", existing.userPeerId);
-      const endpoint = await ctx.ui.input(
-        "Honcho endpoint (leave blank for default):",
-        existing.baseURL || "",
-      );
-      const sessionStrategyInput = await ctx.ui.input(
-        "Session strategy (repo/git-branch/directory):",
-        existing.sessionStrategy,
-      );
-      const sessionStrategy = normalizeSessionStrategy(
-        sessionStrategyInput || existing.sessionStrategy,
-      );
-
-      if (
-        sessionStrategyInput &&
-        sessionStrategyInput !== sessionStrategy &&
-        sessionStrategyInput !== existing.sessionStrategy
-      ) {
-        ctx.ui.notify(
-          `Unknown session strategy '${sessionStrategyInput}'. Using ${sessionStrategy}.`,
-          "warning",
-        );
-      }
-
-      const configPath = getConfigPath();
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-      const fileContents = ((await readConfigFile()) ?? {}) as Record<string, unknown>;
-      const updated = buildConfigFile(
-        fileContents,
-        apiKey,
-        peerName,
-        endpoint,
-        sessionStrategy,
-        existing,
-      );
-
-      await mkdir(dirname(configPath), { recursive: true });
-      await writeFile(configPath, `${JSON.stringify(updated, null, JSON_INDENT)}\n`, "utf-8");
-
-      ctx.ui.notify(`Config saved to ${configPath}`, "info");
-      await testConnection(pi, ctx);
     },
   });
 };
