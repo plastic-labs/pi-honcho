@@ -426,6 +426,24 @@ describe("restart while work is in flight", () => {
       expect(mock.requests).toEqual([]);
     },
   );
+
+  it(
+    "reconnects when a sign-in lands while the phase is still signed-out",
+    { timeout: TIMEOUT },
+    async () => {
+      writeConfig(signedOutConfig());
+      const { runtime } = makeRuntime();
+      expect(await start(runtime)).toBeUndefined();
+      expect(runtime.phase).toBe("signed-out");
+
+      writeConfig(oauthConfig(makeGrant()));
+      const connection = await runtime.restart();
+
+      expect(connection?.sessionName).toBeTruthy();
+      expect(runtime.phase).toBe("connected");
+      expect(runtime.credential?.source).toBe("oauth");
+    },
+  );
 });
 
 describe("transient connect failures", () => {

@@ -139,6 +139,10 @@ export class HonchoRuntime {
       this.setPhase("signed-out");
       return false;
     }
+    // connect() no-ops while signed out, including after this load found a credential
+    if (this.phase === "signed-out") {
+      this.setPhase("idle");
+    }
     return true;
   }
 
