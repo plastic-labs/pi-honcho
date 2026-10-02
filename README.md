@@ -1,95 +1,124 @@
 # pi-honcho-memory
 
-Persistent memory extension for [pi](https://pi.dev) using [Honcho](https://honcho.dev).
+Persistent memory for [pi](https://pi.dev) using [Honcho](https://honcho.dev). Requires pi 1.0 or later.
 
 ![NPM Version](https://img.shields.io/npm/v/%40agney%2Fpi-honcho-memory)
 
-## Features
+Honcho learns from your pi conversations and brings that context back:
 
-- **Automatic memory injection** — cached user profile and project summary injected into the system prompt with zero network latency
-- **Conversational persistence** — user/assistant messages saved to Honcho after each agent response
-- **Flexible session strategies** — choose repo, git-branch, or directory scoped memory
-- **LLM tools** — `honcho_search`, `honcho_chat`, `honcho_remember` for active memory operations
-- **Commands** — `/honcho-status`, `/honcho-setup`
-- **Graceful degradation** — pi works normally if Honcho is unavailable
+- **Session start**: your peer card and the session summary are added to the system prompt. A collapsible `◆ honcho` entry shows what was loaded.
+- **Each turn**: before pi answers, Honcho is asked about your message (`chat`, the default) or returns the most relevant conclusions (`context`). The answer is added under your message, also as a collapsible `◆ honcho` entry.
+- **Saving**: your messages and pi's replies are saved to Honcho after every run.
+- **Tools**: `honcho_chat` asks Honcho 1-5 questions in parallel, each with its own reasoning level. `honcho_search` searches past messages and saved conclusions.
+
+The footer shows the connection state: `● honcho  aakash@pi · aakash-demo · 1,284 conclusions`.
 
 ## Install
+
+```bash
+pi install npm:@agney/pi-honcho-memory
+```
+
+Or from git:
 
 ```bash
 pi install git:github.com/plastic-labs/pi-honcho
 ```
 
-Or try without installing:
+## Sign in
 
-```bash
-pi -e git:github.com/plastic-labs/pi-honcho
-```
+Run `/honcho login` inside pi and pick a method:
 
-## Setup
+- **Browser**: approve in your browser and pi receives the callback on `127.0.0.1`. Over SSH or inside a container, press `p` and paste the URL the browser was redirected to.
+- **Device code**: for SSH and headless machines. Enter the code on any device.
+- **API key**: paste a key from your Honcho dashboard. It is checked before it is saved.
 
-1. Get an API key from [honcho.dev](https://honcho.dev)
-2. Run `/honcho-setup` inside pi to configure interactively
+Browser and device sign-in are offered when the endpoint serves OAuth metadata (Honcho's managed service does). Self-hosted Honcho uses API keys.
 
-Or set environment variables:
+Credentials live in `~/.honcho/config.json`, shared with other Honcho tools:
 
-```bash
-export HONCHO_API_KEY=hch-...
-```
+| Login             | Saved as          | Shared with    |
+| ----------------- | ----------------- | -------------- |
+| Browser or device | root `oauth`      | the honcho CLI |
+| API key           | `hosts.pi.apiKey` | pi only        |
 
-### Honcho agent skills
-
-Honcho already ships its own installable agent skills. Install those separately from this pi extension with:
-
-```bash
-npx skills add plastic-labs/honcho
-```
-
-Docs: https://docs.honcho.dev/v3/documentation/introduction/vibecoding#agent-skills
-
-### Configuration
-
-Config is read from (highest priority first):
-
-1. Environment variables: `HONCHO_API_KEY`, `HONCHO_URL`, `HONCHO_WORKSPACE_ID`, `HONCHO_PEER_NAME`, `HONCHO_AI_PEER`, `HONCHO_SESSION_STRATEGY`, `HONCHO_ENABLED`, `HONCHO_CONTEXT_TOKENS`, `HONCHO_MAX_MESSAGE_LENGTH`, `HONCHO_SEARCH_LIMIT`, `HONCHO_TOOL_PREVIEW_LENGTH`
-2. Config file: `~/.honcho/config.json`
-
-`HONCHO_SESSION_STRATEGY` / `hosts.pi.sessionStrategy` supports:
-
-- `repo` — share memory across git worktrees of the same repo
-- `git-branch` — keep separate memory per branch
-- `directory` — keep separate memory per working directory
-
-Config file properties (`~/.honcho/config.json`):
-
-| Prop                         | Environment variable         | Description                                                            | Default            |
-| ---------------------------- | ---------------------------- | ---------------------------------------------------------------------- | ------------------ |
-| `apiKey`                     | `HONCHO_API_KEY`             | Honcho API key                                                         | none               |
-| `peerName`                   | `HONCHO_PEER_NAME`           | User peer name                                                         | `$USER`            |
-| `hosts.pi.workspace`         | `HONCHO_WORKSPACE_ID`        | Honcho workspace ID                                                    | `pi`               |
-| `hosts.pi.aiPeer`            | `HONCHO_AI_PEER`             | AI peer name                                                           | `pi`               |
-| `hosts.pi.endpoint`          | `HONCHO_URL`                 | Honcho API base URL                                                    | default Honcho API |
-| `hosts.pi.sessionStrategy`   | `HONCHO_SESSION_STRATEGY`    | Session scope for memory sharing                                       | `repo`             |
-| `hosts.pi.contextTokens`     | `HONCHO_CONTEXT_TOKENS`      | Token budget requested from Honcho for injected project memory         | `1200`             |
-| `hosts.pi.maxMessageLength`  | `HONCHO_MAX_MESSAGE_LENGTH`  | Maximum length of a synced user/assistant message before it is skipped | `8000`             |
-| `hosts.pi.searchLimit`       | `HONCHO_SEARCH_LIMIT`        | Maximum number of search results returned by `honcho_search`           | `8`                |
-| `hosts.pi.toolPreviewLength` | `HONCHO_TOOL_PREVIEW_LENGTH` | Character preview length per search result returned by `honcho_search` | `500`              |
-
-All numeric options must be positive integers. Invalid values fall back to defaults.
-
-## Tools
-
-| Tool              | Description                                                    |
-| ----------------- | -------------------------------------------------------------- |
-| `honcho_search`   | Search persistent memory for prior conversations and decisions |
-| `honcho_chat`     | Ask Honcho to reason over memory for deeper questions          |
-| `honcho_remember` | Save a durable fact, preference, or decision                   |
+`HONCHO_API_KEY` in your environment takes precedence over any saved login. When nothing pi-specific is saved, pi uses a root `apiKey` written by another tool.
 
 ## Commands
 
-| Command          | Description                       |
-| ---------------- | --------------------------------- |
-| `/honcho-status` | Show connection status and config |
-| `/honcho-setup`  | Interactive configuration wizard  |
+| Command                                | What it does                                                                                                                       |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `/honcho`                              | Status: connection, account, workspace, peers, session, memory counts, queue, injection settings                                   |
+| `/honcho login [browser\|device\|key]` | Sign in                                                                                                                            |
+| `/honcho logout`                       | Sign out. Revoking the shared OAuth sign-in asks first because it also signs out the honcho CLI. A root `apiKey` is never removed. |
+| `/honcho config`                       | Settings. Every change is saved immediately.                                                                                       |
+| `/honcho on`, `/honcho off`            | Turn Honcho on or off for pi. While off, nothing is injected or saved.                                                             |
+
+Press `ctrl+o` to expand or collapse the `◆ honcho` entries and tool results.
+
+## Configuration
+
+`/honcho config` edits `~/.honcho/config.json`. Settings marked "shared" apply to every Honcho harness; "pi only" settings live under `hosts.pi`.
+
+| Setting                   | Key                                                          | Scope   | Default                       |
+| ------------------------- | ------------------------------------------------------------ | ------- | ----------------------------- |
+| Honcho on/off             | `hosts.pi.enabled`                                           | pi only | `true`                        |
+| Endpoint                  | `environmentUrl`, `endpoint.baseUrl`                         | shared  | `https://api.honcho.dev`      |
+| Workspace                 | `hosts.pi.workspace`                                         | pi only | `pi`                          |
+| Your peer                 | `peerName`                                                   | shared  | `$USER`                       |
+| Agent peer                | `hosts.pi.aiPeer`                                            | pi only | `pi`                          |
+| Session mapping           | `hosts.pi.sessionStrategy`                                   | pi only | `per-directory`               |
+| Session start             | `hosts.pi.injection.sessionStart`                            | pi only | `["summary", "peerCard"]`     |
+| Each turn                 | `hosts.pi.injection.perTurn`                                 | pi only | `["dialectic"]` (chat)        |
+| Reasoning (chat)          | `hosts.pi.injection.dialecticReasoning`                      | pi only | `medium`                      |
+| Chat prompt               | `hosts.pi.injection.dialecticTemplate`                       | pi only | built-in template             |
+| Max conclusions (context) | `hosts.pi.injection.maxConclusions`                          | pi only | `15`                          |
+| Show in chat              | `hosts.pi.injection.showInChat`                              | pi only | `["sessionStart", "perTurn"]` |
+| Tools                     | `hosts.pi.tools.honcho_chat`, `hosts.pi.tools.honcho_search` | pi only | `true`                        |
+| Save messages             | `hosts.pi.saveMessages`                                      | pi only | `true`                        |
+
+`perTurn` uses the Claude Code plugin's names: `["dialectic"]` is chat, `["userContext"]` is context, `[]` is off.
+
+Session mapping:
+
+- `per-directory`: one session per directory, named `<peer>-<folder>` like the Claude Code plugin, so a repo maps to the same session name in both. Linked git worktrees share the main checkout's session. The root `sessions` map (`{"/abs/path": "name"}`) overrides the name.
+- `git-branch`: one session per branch, `<peer>-<folder>-<branch>`.
+- `chat-instance`: one session per pi session.
+
+The per-turn memory check waits at most 30 seconds, then the turn continues without it.
+
+### Environment variables
+
+Environment variables win over the config file. `/honcho config` names the variable when one is shadowing a saved value.
+
+| Variable                                           | Overrides            |
+| -------------------------------------------------- | -------------------- |
+| `HONCHO_API_KEY`                                   | the saved login      |
+| `HONCHO_BASE_URL`, `HONCHO_URL`, `HONCHO_ENDPOINT` | endpoint             |
+| `HONCHO_WORKSPACE`, `HONCHO_WORKSPACE_ID`          | workspace            |
+| `HONCHO_PEER_NAME`                                 | your peer            |
+| `HONCHO_AI_PEER`                                   | agent peer           |
+| `HONCHO_SESSION_STRATEGY`                          | session mapping      |
+| `HONCHO_ENABLED=false`                             | turns Honcho off     |
+| `HONCHO_CONFIG_PATH`                               | config file location |
+
+## Trying a local checkout
+
+Load only the checkout, without your installed extensions, and keep its config separate from your real one:
+
+```bash
+pnpm install
+HONCHO_CONFIG_PATH=/tmp/pi-honcho/config.json pi -ne -e .
+```
+
+`-ne` (`--no-extensions`) skips discovered and configured extensions; explicit `-e` paths still load.
+
+## Upgrading from 0.x
+
+- Commands `/honcho-status` and `/honcho-setup` are replaced by `/honcho` and its subcommands.
+- The `honcho_remember` tool is removed.
+- Session strategies `repo` and `directory` map to `per-directory`, which uses Claude Code's naming, so memory starts in a new session.
+- `contextTokens`, `maxMessageLength`, `searchLimit` and `toolPreviewLength` are no longer read.
 
 ## Contributing
 
