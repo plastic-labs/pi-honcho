@@ -73,4 +73,4 @@ To run a checkout without the user's installed extensions or their real config: 
 ## Conventions
 
 - Comments: one terse line for the why; no history narration. Copy follows the design artboards; no em-dashes in new user-facing copy.
-- Changesets drive releases (`pnpm changeset`).
+- Releases are dispatched from the `Release` workflow with the version as input, staged on npm and approved by a maintainer with 2FA. Never commit a version bump; add user-facing changes to `CHANGELOG.md` under `## [x.y.z] - unreleased`.

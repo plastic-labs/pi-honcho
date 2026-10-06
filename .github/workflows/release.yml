@@ -1,42 +1,163 @@
 name: Release
 
+# Releases @honcho-ai/pi-honcho. The version is a dispatch input, stamped into
+# package.json at publish time, so a release never commits anything to main.
+# The version in source is a dev-only fallback.
+#
+# Publishing is staged: this workflow stages the version on npm through
+# trusted publishing (OIDC, no stored token), and a maintainer approves it with
+# 2FA on npmjs.com or with `npm stage approve`. The GitHub Release is created as
+# a draft; publish it after approving on npm, which also creates the tag.
+#
+# Re-dispatching a version that is already on npm skips staging and only
+# fills in a missing draft release.
+#
+# The npm dist-tag is derived from the version: prerelease versions stage
+# under next, stable versions under latest.
+
 on:
-  workflow_run:
-    workflows: [CI]
-    branches: [main]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.1.0 or 1.1.0-rc.1)"
+        type: string
+        required: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+  contents: write # draft GitHub Release
+  id-token: write # npm trusted publishing and provenance
 
 jobs:
   release:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Dispatch runs the workflow definition from the selected ref; only the
+    # reviewed copy on main may stage a release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Matches the environment on the npm trusted publisher config, and limits
+    # OIDC tokens to deployments from main.
+    environment: npm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
-      - uses: actions/setup-node@v6
+      # No dependency cache: a release must not restore state that another
+      # workflow run could have written.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
-          cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      - run: pnpm install --frozen-lockfile
-      - run: npm install -g npm@latest
+      # npm stage needs npm 11.15+. Pinned so a compromised npm release can't
+      # reach the publish step.
+      - run: npm install -g npm@12.2.0
 
-      - uses: changesets/action@v1
-        with:
-          version: pnpm changeset version
-          publish: pnpm changeset publish
-          commit: "chore: release"
-          title: "chore: release"
+      # npm's latest tag points at the most recently published version, not
+      # the semver max, so a non-monotonic stable release would repoint
+      # latest backwards. Prereleases are exempt (they stage under next).
+      - name: Validate version
+        id: version
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true
+          VERSION: ${{ inputs.version }}
+        run: |
+          # Whole-string match: [[ =~ ]] anchors reject embedded CR/LF, which
+          # a line-based grep would let through into GITHUB_OUTPUT.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a valid semver version"
+            exit 1
+          fi
+          case "$VERSION" in
+            *-*) DIST_TAG=next; PRERELEASE=true ;;
+            *)   DIST_TAG=latest; PRERELEASE=false ;;
+          esac
+          # Lookups fail closed: only a confirmed E404 (no package yet) counts
+          # as absence.
+          set +e
+          CURRENT_OUT="$(npm view @honcho-ai/pi-honcho dist-tags.latest 2>&1)"
+          CURRENT_STATUS=$?
+          set -e
+          if [ "$CURRENT_STATUS" -eq 0 ]; then
+            CURRENT="$CURRENT_OUT"
+          elif echo "$CURRENT_OUT" | grep -q "E404"; then
+            CURRENT=""
+          else
+            echo "::error::npm lookup for dist-tags.latest failed: $CURRENT_OUT"
+            exit 1
+          fi
+          if [ "$DIST_TAG" = "latest" ] && [ -n "$CURRENT" ] && [ "$CURRENT" != "$VERSION" ]; then
+            HIGHEST="$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -n1)"
+            if [ "$HIGHEST" != "$VERSION" ]; then
+              echo "::error::$VERSION is lower than the published latest ($CURRENT)"
+              exit 1
+            fi
+          fi
+          {
+            echo "version=$VERSION"
+            echo "dist-tag=$DIST_TAG"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm test
+
+      - name: Stage on npm
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIST_TAG: ${{ steps.version.outputs.dist-tag }}
+        run: |
+          # Fail closed: stage only on a confirmed E404 for this version.
+          set +e
+          EXISTS_OUT="$(npm view "@honcho-ai/pi-honcho@$VERSION" version 2>&1)"
+          EXISTS_STATUS=$?
+          set -e
+          if [ "$EXISTS_STATUS" -eq 0 ] && [ -n "$EXISTS_OUT" ]; then
+            echo "$VERSION already on npm; skipping stage"
+          elif [ "$EXISTS_STATUS" -ne 0 ] && ! echo "$EXISTS_OUT" | grep -q "E404"; then
+            echo "::error::npm lookup for $VERSION failed: $EXISTS_OUT"
+            exit 1
+          else
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            npm stage publish --provenance --access public --tag "$DIST_TAG"
+            echo "::notice::Staged $VERSION. Approve it at https://www.npmjs.com/package/@honcho-ai/pi-honcho or with npm stage approve, then publish the draft release v$VERSION."
+          fi
+
+      # A draft release creates no tag until it is published, so a rejected
+      # stage leaves nothing behind but the draft. --target pins the tag to
+      # the exact commit that was staged.
+      - name: Draft GitHub Release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG release already exists; skipping"
+            exit 0
+          fi
+          # Notes come from the CHANGELOG section for this version, if any.
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then
+            NOTES=(--notes-file notes.md)
+          else
+            NOTES=(--generate-notes)
+          fi
+          gh release create "$TAG" \
+            --draft \
+            --target "${{ github.sha }}" \
+            --title "v$VERSION" \
+            "${NOTES[@]}" \
+            $([ "$PRERELEASE" = "true" ] && echo --prerelease)
