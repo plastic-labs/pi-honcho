@@ -22,6 +22,13 @@ pnpm run lint          # check for issues
 pnpm run lint:fix      # auto-fix issues
 ```
 
+## Type checking and tests
+
+```bash
+pnpm run typecheck     # tsc against the pi 1.0 typings
+pnpm test              # unit tests plus a pi 1.0 session against a mock Honcho
+```
+
 ## Formatting
 
 Uses [oxfmt](https://oxc.rs/docs/guide/usage/formatter) for formatting.
@@ -87,4 +94,3 @@ pnpm release
 
 `.github/workflows/release.yml` uses `changesets/action` on pushes to `main`.
 If there are pending changesets, it opens or updates a release PR. Once merged, the next run publishes to npm.
-
