@@ -2,7 +2,13 @@
 
 All notable changes to `@honcho-ai/pi-honcho` are documented in this file.
 
-## [1.0.0] - unreleased
+## [1.0.1] - 2026-10-06
+
+### Changed
+
+- First release through the staged release workflow, published with npm provenance. No code changes from 1.0.0.
+
+## [1.0.0] - 2026-10-06
 
 Rebuild for pi 1.0 on Honcho's golden path.
 
