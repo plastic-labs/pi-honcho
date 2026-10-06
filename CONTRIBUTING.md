@@ -58,39 +58,21 @@ pnpm test:watch    # re-run on file changes
 
 Tests live in the `tests/` directory alongside the source.
 
+## Changelog
+
+Add user-facing changes to `CHANGELOG.md` under the next version's heading, `## [x.y.z] - unreleased`. Nothing in the repo needs a version bump in your PR.
+
 ## Releases
 
-This project uses [Changesets](https://github.com/changesets/changesets) for versioning and changelog generation.
-
-### Add a changeset
-
-For any PR that should ship in a release, add a changeset:
+Maintainers cut releases from the `Release` workflow, which takes the version as a dispatch input:
 
 ```bash
-pnpm changeset
+gh workflow run release.yml -f version=1.1.0
 ```
 
-This creates a file in `.changeset/` describing the version bump and release note.
+The workflow runs lint, typecheck and tests, stamps the version into `package.json`, and stages it on npm through trusted publishing. No npm token is stored anywhere. A staged version is not installable until a maintainer approves it with 2FA:
 
-### Version packages locally
+1. Wait for npm's malware scan to finish, then approve the staged version in the package's Staged Packages tab on npmjs.com, or run `npm stage list` and `npm stage approve <id>`.
+2. Publish the draft GitHub Release `v1.1.0` that the workflow created. This creates the tag on the commit that was staged.
 
-To apply pending changesets locally:
-
-```bash
-pnpm version-packages
-```
-
-This updates `package.json` and `CHANGELOG.md`.
-
-### Publish
-
-To publish manually:
-
-```bash
-pnpm release
-```
-
-### GitHub automation
-
-`.github/workflows/release.yml` uses `changesets/action` on pushes to `main`.
-If there are pending changesets, it opens or updates a release PR. Once merged, the next run publishes to npm.
+Prerelease versions (`1.1.0-rc.1`) stage under the `next` dist-tag. Re-dispatching a version that is already on npm only fills in a missing draft release.
