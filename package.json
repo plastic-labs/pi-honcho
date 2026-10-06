@@ -1,8 +1,11 @@
 {
-  "name": "@agney/pi-honcho-memory",
+  "name": "@honcho-ai/pi-honcho",
   "version": "0.1.0",
-  "description": "Honcho persistent memory extension for pi coding agent",
+  "description": "Official Honcho memory extension for the pi coding agent",
   "keywords": [
+    "honcho",
+    "memory",
+    "pi-extension",
     "pi-package"
   ],
   "homepage": "https://github.com/plastic-labs/pi-honcho#readme",
@@ -10,6 +13,10 @@
     "url": "https://github.com/plastic-labs/pi-honcho/issues"
   },
   "license": "MIT",
+  "author": "Plastic Labs <hello@plasticlabs.ai> (https://plasticlabs.ai)",
+  "contributors": [
+    "Agney Menon (https://github.com/agneym)"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/plastic-labs/pi-honcho.git"

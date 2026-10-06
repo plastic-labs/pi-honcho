@@ -1,8 +1,8 @@
-# pi-honcho-memory
+# pi-honcho
 
 Persistent memory for [pi](https://pi.dev) using [Honcho](https://honcho.dev). Requires pi 1.0 or later.
 
-![NPM Version](https://img.shields.io/npm/v/%40agney%2Fpi-honcho-memory)
+![NPM Version](https://img.shields.io/npm/v/%40honcho-ai%2Fpi-honcho)
 
 Honcho learns from your pi conversations and brings that context back:
 
@@ -16,7 +16,7 @@ The footer shows the connection state: `● honcho  aakash@pi · aakash-demo · 
 ## Install
 
 ```bash
-pi install npm:@agney/pi-honcho-memory
+pi install npm:@honcho-ai/pi-honcho
 ```
 
 Or from git:
@@ -113,17 +113,14 @@ HONCHO_CONFIG_PATH=/tmp/pi-honcho/config.json pi -ne -e .
 
 `-ne` (`--no-extensions`) skips discovered and configured extensions; explicit `-e` paths still load.
 
-## Upgrading from 0.x
-
-- Commands `/honcho-status` and `/honcho-setup` are replaced by `/honcho` and its subcommands.
-- The `honcho_remember` tool is removed.
-- Session strategies `repo` and `directory` map to `per-directory`, which uses Claude Code's naming, so memory starts in a new session.
-- `contextTokens`, `maxMessageLength`, `searchLimit` and `toolPreviewLength` are no longer read.
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Credits
+
+pi-honcho started as [pi-honcho-memory](https://github.com/agneym/pi-honcho-memory) by [Agney Menon](https://github.com/agneym). Thanks to Agney for the original extension.
+
 ## License
 
-MIT
+[MIT](LICENSE)

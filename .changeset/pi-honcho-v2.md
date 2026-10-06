@@ -1,5 +1,5 @@
 ---
-"@agney/pi-honcho-memory": major
+"@honcho-ai/pi-honcho": major
 ---
 
 Rebuild for pi 1.0 on Honcho's golden path.
