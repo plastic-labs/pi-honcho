@@ -1,6 +1,6 @@
 {
   "name": "@honcho-ai/pi-honcho",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Official Honcho memory extension for the pi coding agent",
   "keywords": [
     "honcho",
@@ -74,6 +74,7 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/plastic-labs/pi-honcho/main/assets/banner.png"
   }
 }
